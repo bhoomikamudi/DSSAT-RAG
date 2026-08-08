@@ -72,6 +72,8 @@ DSSAT-RAG/
 - **Service Layer**: Business logic separation
 - **Pydantic Models**: Type validation and serialization
 - **Database Migrations**: Alembic for schema management
+- **RAG Agent Orchestrator** (`app/agent/`): natural-language chat endpoint (`POST /api/v1/chat/`) that plans a query with an OpenAI LLM, fans it out across metadata, spatial, statistics, CDE, and embedding tools, and composes a grounded natural-language answer with cited sources. See [`backend/app/agent/README.md`](backend/app/agent/README.md) for the architecture.
+- **Vector Search**: Qdrant-backed embedding service for semantic retrieval over simulation data
 
 ### Data Ingestion Pipeline
 
@@ -159,6 +161,11 @@ Once the backend is running:
   - Request: `multipart/form-data` with `files` field
   - Response: List of results with simulation IDs
 
+#### Chat
+- `POST /api/v1/chat/` - Ask a natural-language question about ingested simulation data
+  - Request: JSON body with a `message` field
+  - Response: LLM-generated answer, cited sources, and any matching simulations/statistics pulled by the agent
+
 ## Database Schema
 
 ### Simulations Table
@@ -218,11 +225,9 @@ alembic downgrade -1
 
 ## Future Enhancements
 
-1. **LLM Integration**: Chatbot functionality using LLMs
-2. **Vector Database**: Qdrant integration for embeddings
-3. **CDE Support**: Crop Data Exchange format support
-4. **Advanced Spatial Queries**: PostGIS spatial operations
-5. **Real-time Processing**: WebSocket support for real-time updates
+1. **Frontend chat wiring**: the Next.js chat UI is scaffolded but not yet fully wired to `/api/v1/chat/`
+2. **Real-time Processing**: WebSocket support for streaming responses
+3. **n8n integration**: promote the workflow definitions in `n8n/` from prototype to a scheduled ingestion pipeline
 
 ## Contributing
 
@@ -234,7 +239,7 @@ alembic downgrade -1
 
 ## License
 
-This project is licensed under the MIT License.
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
