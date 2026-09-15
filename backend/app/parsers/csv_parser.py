@@ -144,7 +144,7 @@ class DSSATParser:
             List of CanonicalSimulation instances
         """
         # Read CSV with pandas
-        df = pd.read_csv(file_path)
+        df = pd.read_csv(file_path, index_col=False)
 
         # Derive a sensible default experiment name from the file name
         default_experiment_name = Path(file_path).stem
@@ -216,11 +216,10 @@ class DSSATParser:
         mdat = parse_yyyydoy(get_first(["MDAT"]))
         hdat = parse_yyyydoy(get_first(["HDAT"]))
 
-        if isinstance(year, str):
-            try:
-                year = int(year)
-            except ValueError:
-                year = 2024
+        try:
+            year = int(year) if year is not None else 2024
+        except (TypeError, ValueError):
+            year = 2024
 
         # Extract outputs
         outputs: Dict[str, Any] = {}
@@ -233,13 +232,13 @@ class DSSATParser:
         simulation = SimulationModel(
             run_name=run_name,
             experiment_name=default_experiment_name,
-            crop=name_parts.get("crop", ""),
+            crop=str(cls.clean_value(get_first(["CR", "CROP"])) or name_parts.get("crop", "")),
             cultivar=name_parts.get("cultivar", ""),
             irrigation=name_parts.get("irrigation", ""),
             nitrogen_level=name_parts.get("nitrogen", ""),
             planting_stage=name_parts.get("planting_stage", ""),
             harvest_area=harvest_area,  # may be None
-            year=year if isinstance(year, int) else 2024,
+            year=year,
             planting_date=pdat,
             maturity_date=mdat,
             harvest_date=hdat,
