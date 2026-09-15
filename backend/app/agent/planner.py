@@ -364,11 +364,33 @@ class QueryPlanner:
                 mcode = re.search(r"\b[A-Z]{3,6}\b", user_query)
                 if mcode:
                     metric_resolved = mcode.group(0)
-            # Extract year
-            m = re.search(r"\b(19|20)\d{2}\b", query_lower)
-            if m:
+            # Extract a year range or a single year
+            range_match = re.search(
+                r"\b(?:from|between)\s+((?:19|20)\d{2})\s+(?:to|and|-)\s+((?:19|20)\d{2})\b",
+                query_lower,
+            )
+
+            if range_match:
+                start_year = int(range_match.group(1))
+                end_year = int(range_match.group(2))
+                filters["year"] = list(range(start_year, end_year + 1))
+            else:
+                year_match = re.search(r"\b(?:19|20)\d{2}\b", query_lower)
+                if year_match:
+                    filters["year"] = int(year_match.group(0))
+
+            if self.db_session is not None:
                 try:
-                    filters["year"] = int(m.group(0))
+                    if hasattr(self.db_session, "session"):
+                        db = await self.db_session.session()
+                    else:
+                        db = self.db_session
+
+                    stats = StatisticsService(db)
+                    crop_resolved = await stats.resolve_crop_from_text(user_query)
+
+                    if crop_resolved:
+                        filters["crop"] = crop_resolved
                 except Exception:
                     pass
             # Extract crop dynamically
@@ -397,21 +419,30 @@ class QueryPlanner:
             intent = "comparison"
             required_tools.append("statistics")
 
-        # Extract simple filters
-        m = re.search(r"\b(19|20)\d{2}\b", query_lower)
-        if m:
-            try:
-                filters["year"] = int(m.group(0))
-            except Exception:
-                pass
+        # Extract a year range or a single year
+        range_match = re.search(
+            r"\b(?:from|between)\s+((?:19|20)\d{2})\s+(?:to|and|-)\s+((?:19|20)\d{2})\b",
+            query_lower,
+        )
+
+        if range_match:
+            start_year = int(range_match.group(1))
+            end_year = int(range_match.group(2))
+            filters["year"] = list(range(start_year, end_year + 1))
+        else:
+            year_match = re.search(r"\b(?:19|20)\d{2}\b", query_lower)
+            if year_match:
+                filters["year"] = int(year_match.group(0))
         if self.db_session is not None:
             try:
-                if hasattr(self.db_session, 'session'):
+                if hasattr(self.db_session, "session"):
                     db = await self.db_session.session()
                 else:
                     db = self.db_session
+
                 stats = StatisticsService(db)
                 crop_resolved = await stats.resolve_crop_from_text(user_query)
+
                 if crop_resolved:
                     filters["crop"] = crop_resolved
             except Exception:
