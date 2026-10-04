@@ -52,6 +52,23 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = Field(default="gpt-oss-120b")
     OPENAI_BASE_URL: Optional[str] = Field(default=None)
 
+    # Spatial filtering
+    SPATIAL_DEFAULT_RADIUS_KM: float = Field(default=25.0, gt=0)
+    SPATIAL_MAX_RADIUS_KM: float = Field(default=500.0, gt=0)
+
+    # Place lookup (OpenStreetMap Nominatim or a compatible self-hosted server).
+    # The public server requires an identifying User-Agent with contact info
+    # and allows at most 1 request per second.
+    GEOCODER_ENABLED: bool = Field(default=True)
+    GEOCODER_URL: str = Field(default="https://nominatim.openstreetmap.org/search")
+    GEOCODER_USER_AGENT: str = Field(default="DSSAT-RAG/1.0 (set GEOCODER_USER_AGENT with a contact)")
+    GEOCODER_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+    GEOCODER_MIN_INTERVAL_SECONDS: float = Field(default=1.0, ge=0)
+
+    # Ingestion provenance: one JSON line per uploaded file (name, SHA-256,
+    # row counts, outcome). Used to flag repeated and partial uploads.
+    INGESTION_LOG_PATH: str = Field(default="logs/ingestion_log.jsonl")
+
     # Application
     APP_NAME: str = Field(default="DSSAT RAG Backend")
     APP_VERSION: str = Field(default="1.0.0")

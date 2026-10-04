@@ -97,6 +97,16 @@ class IngestionResult(BaseModel):
     errors: List[str] = []
     execution_time_ms: float = 0.0
 
+    # Provenance and idempotency (summary CSVs)
+    status: str = "completed"
+    """completed | already_present | partial_overlap | rejected | failed"""
+    source_sha256: Optional[str] = None
+    rows_in_file: int = 0
+    records_inserted: int = 0
+    records_already_present: int = 0
+    records_invalid: int = 0
+    warnings: List[str] = []
+
 
 class IngestionBatchResult(BaseModel):
     """Result of a batch ingestion operation."""

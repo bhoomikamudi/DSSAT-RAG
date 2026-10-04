@@ -29,16 +29,22 @@ async def chat_query(
     try:
         # Create orchestrator with database session (keys resolved internally)
         orchestrator = AgentOrchestrator(db_session=db)
-        
+
         # Execute orchestration
-        response = await orchestrator.orchestrate_with_error_handling(request.message)
-        
+        response = await orchestrator.orchestrate_with_error_handling(
+            request.message,
+            session_id=request.session_id,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            radius_km=request.radius_km,
+        )
+
         if not response.success:
             raise HTTPException(
                 status_code=500,
                 detail=f"Orchestration failed: {response.errors}",
             )
-        
+
         # Return structured response
         # Include last planner tool calls if available for verification
         planner_output = orchestrator.planner.get_last_planner_output()
@@ -50,9 +56,17 @@ async def chat_query(
                 for s in (response.response.sources if response.response else [])
             ],
             "simulations": (
-                response.context.metadata.simulations 
-                if response.context and response.context.metadata 
+                response.context.metadata.simulations
+                if response.context and response.context.metadata
                 else []
+            ),
+            "simulation_matches": (
+                {
+                    "total_count": response.context.metadata.total_count,
+                    "returned_count": len(response.context.metadata.simulations),
+                    "sample_limit": response.context.metadata.sample_limit,
+                }
+                if response.context and response.context.metadata else None
             ),
             "statistics": (
                 response.context.statistics.model_dump()
@@ -69,6 +83,35 @@ async def chat_query(
                 if response.context and response.context.tool_outputs
                 else None
             ),
+            "analysis": (
+                response.context.analysis.model_dump(mode="json")
+                if response.context and response.context.analysis
+                else None
+            ),
+            "spatial": (
+                {
+                    **(response.context.spatial_scope or {}),
+                    "notice": response.context.spatial_notice,
+                }
+                if response.context
+                and (response.context.spatial_scope or response.context.spatial_notice)
+                else None
+            ),
+            # Management conditions (cultivar, planting date, irrigation,
+            # nitrogen) of the records behind the result.
+            "management": response.context.management_scope if response.context else None,
+            # Provenance: whether the real LLM or the fallback planned this
+            # question (with any deterministic corrections), and who wrote
+            # the answer text. Never contains credentials.
+            "planner": {
+                **{
+                    key: value
+                    for key, value in orchestrator.planner.get_plan_source().items()
+                    if key != "raw_plan"
+                },
+                "planner": orchestrator.planner.get_plan_source().get("planner") or "not_run",
+                "answer_by": orchestrator.response_generator.last_generated_by,
+            },
             "confidence": response.response.confidence if response.response else "low",
             "query_plan": response.query_plan.model_dump() if response.query_plan else None,
             "semantic_plan": semantic_plan.model_dump() if semantic_plan else None,

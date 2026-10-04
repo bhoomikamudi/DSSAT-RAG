@@ -10,6 +10,23 @@ from sqlalchemy import func, and_, or_
 from app.models.simulation import Simulation, SimulationOutput
 
 
+def simulation_key(run_name: Any, latitude: Any, longitude: Any, year: Any) -> tuple:
+    """Natural identity of a simulation: (run_name, lat, lon, year).
+
+    RUN_NAME encodes the treatment (crop, irrigation, nitrogen, cultivar,
+    planting stage); with the location and weather year it is unique in the
+    DSSAT summary CSVs. The source file name is deliberately not part of the
+    key, so the same data uploaded under another name is still recognized.
+    Coordinates are rounded to 6 decimals (~0.1 m) to absorb float noise.
+    """
+    return (
+        str(run_name),
+        round(float(latitude), 6),
+        round(float(longitude), 6),
+        int(year),
+    )
+
+
 class SimulationRepository:
     """Repository for simulation operations."""
 
@@ -351,13 +368,17 @@ class SimulationRepository:
         self,
         crop: Optional[str] = None,
         cultivar: Optional[str] = None,
+        planting_stage: Optional[str] = None,
         year: Optional[object] = None,
         state: Optional[str] = None,
         district: Optional[str] = None,
+        irrigation: Optional[str] = None,
+        nitrogen_level: Optional[str] = None,
         ecological_zone: Optional[str] = None,
         country: Optional[str] = None,
         skip: int = 0,
         limit: int = 100,
+        spatial: Optional[Any] = None,
     ) -> List[Simulation]:
         """
         Get simulations with multiple filters.
@@ -376,31 +397,53 @@ class SimulationRepository:
         Returns:
             List of simulation records
         """
+        def equals_or_in(column, value):
+            # A list (e.g. two cultivars) becomes an IN clause.
+            if isinstance(value, (list, tuple, set)):
+                return column.in_(list(value))
+            return column == value
+
         filters = []
         if crop is not None:
-            filters.append(Simulation.crop == crop)
+            filters.append(equals_or_in(Simulation.crop, crop))
         if cultivar is not None:
-            filters.append(Simulation.cultivar == cultivar)
+            filters.append(equals_or_in(Simulation.cultivar, cultivar))
+
+        if irrigation is not None:
+            filters.append(equals_or_in(Simulation.irrigation, irrigation))
+
+        if nitrogen_level is not None:
+            filters.append(
+                equals_or_in(Simulation.nitrogen_level, nitrogen_level)
+            )
+
+        if planting_stage is not None:
+            filters.append(
+                equals_or_in(Simulation.planting_stage, planting_stage)
+            )
         if year is not None:
             try:
                 from collections.abc import Iterable
                 # Treat list-like as IN clause
                 if isinstance(year, Iterable) and not isinstance(year, (str, bytes)):
                     years = list(year)
-                    if len(years) > 0:
-                        filters.append(Simulation.simulation_year.in_(years))
+                    filters.append(Simulation.simulation_year.in_(years))
                 else:
                     filters.append(Simulation.simulation_year == year)  # type: ignore[arg-type]
             except Exception:
                 filters.append(Simulation.simulation_year == year)  # fallback
         if state is not None:
-            filters.append(Simulation.state == state)
+            filters.append(equals_or_in(Simulation.state, state))
         if district is not None:
-            filters.append(Simulation.district == district)
+            filters.append(equals_or_in(Simulation.district, district))
         if ecological_zone is not None:
-            filters.append(Simulation.ecological_zone == ecological_zone)
+            filters.append(equals_or_in(Simulation.ecological_zone, ecological_zone))
         if country is not None:
-            filters.append(Simulation.country == country)
+            filters.append(equals_or_in(Simulation.country, country))
+        if spatial is not None:
+            from app.services.spatial_sql import spatial_condition
+
+            filters.append(spatial_condition(spatial))
 
         stmt = (
             select(Simulation)
@@ -488,6 +531,35 @@ class SimulationRepository:
         await self.db.commit()
         await self.db.refresh(obj)
         return obj
+
+    async def lock_runs(self, run_names: List[str]) -> None:
+        """Serialize ingestion of the same runs within the current transaction.
+
+        Transaction-scoped advisory locks (released on commit/rollback), taken
+        in sorted order to avoid deadlocks. No schema change is required.
+        """
+        for run_name in sorted(set(run_names)):
+            await self.db.execute(
+                select(func.pg_advisory_xact_lock(func.hashtext(run_name)))
+            )
+
+    async def get_existing_keys(self, run_names: List[str]) -> set:
+        """Natural keys already stored for the given runs.
+
+        Key: (run_name, latitude, longitude, simulation_year), the identity
+        of a simulation in the DSSAT summary CSVs.
+        """
+        if not run_names:
+            return set()
+        result = await self.db.execute(
+            select(
+                Simulation.run_name,
+                Simulation.latitude,
+                Simulation.longitude,
+                Simulation.simulation_year,
+            ).where(Simulation.run_name.in_(sorted(set(run_names))))
+        )
+        return {simulation_key(*row) for row in result.all()}
 
     async def create_bulk(self, objs: List[Simulation]) -> List[Simulation]:
         """

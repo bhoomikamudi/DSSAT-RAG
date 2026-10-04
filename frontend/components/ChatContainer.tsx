@@ -15,9 +15,16 @@ import {
   Menu,
   MenuItem,
 } from '@mui/material'
-import { ChatMessage as ChatMessageType } from '@/types/chat'
+import {
+  ChatMessage as ChatMessageType,
+  ManagementVariables,
+  MapPoint,
+  SpatialCoverage,
+} from '@/types/chat'
 import { ChatMessage } from './ChatMessage'
 import { ChatInput } from './ChatInput'
+import { LocationFilterPanel } from './LocationFilterPanel'
+import { ManagementVariablesPanel } from './ManagementVariablesPanel'
 import chatbotApiService from '@/services/chatbotApi'
 import { generateMessageId } from '@/utils/chatUtils'
 import DeleteIcon from '@mui/icons-material/Delete'
@@ -39,6 +46,19 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
   const [connectionError, setConnectionError] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
+  // Lets the backend resolve follow-up analysis questions in this chat.
+  const sessionIdRef = useRef<string>(generateMessageId())
+
+  // Location filter: a map point and a radius. The default radius comes from
+  // the backend configuration and the user can change it.
+  const [mapPoint, setMapPoint] = useState<MapPoint | null>(null)
+  const [radiusKm, setRadiusKm] = useState<number | null>(null)
+  const [maxRadiusKm, setMaxRadiusKm] = useState<number>(500)
+  const [coverage, setCoverage] = useState<SpatialCoverage | null>(null)
+  const [coverageError, setCoverageError] = useState<string | null>(null)
+  // Management fields and values present in the data (shown above the input).
+  const [managementVariables, setManagementVariables] = useState<ManagementVariables | null>(null)
+  const [managementError, setManagementError] = useState<string | null>(null)
 
   // Auto-scroll to bottom when new messages arrive
   const scrollToBottom = () => {
@@ -58,16 +78,40 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     checkConnection()
   }, [])
 
+  // Load the default radius and where data exists (for the map).
+  useEffect(() => {
+    chatbotApiService
+      .getSpatialConfig()
+      .then((config) => {
+        setRadiusKm((current) => current ?? config.default_radius_km)
+        setMaxRadiusKm(config.max_radius_km)
+      })
+      .catch(() => undefined)
+    chatbotApiService
+      .getSpatialCoverage()
+      .then(setCoverage)
+      .catch(() => setCoverageError('Could not load data locations for the map.'))
+    chatbotApiService
+      .getManagementVariables()
+      .then(setManagementVariables)
+      .catch(() => setManagementError('Could not load the management variables.'))
+  }, [])
+
   // Handle sending a message
   const handleSendMessage = useCallback(
     async (userQuery: string) => {
       try {
+        // The same location values go into the request and onto the
+        // question, so every question shows what its answer was filtered by.
+        const location = { point: mapPoint, radiusKm }
+
         // Add user message
         const userMessage: ChatMessageType = {
           id: generateMessageId(),
           role: 'user',
           content: userQuery,
           timestamp: new Date(),
+          sentLocation: location,
         }
         setMessages((prev) => [...prev, userMessage])
 
@@ -83,7 +127,11 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         setIsLoading(true)
 
         // Send message to API
-        const response = await chatbotApiService.sendMessage(userQuery)
+        const response = await chatbotApiService.sendMessage(
+          userQuery,
+          sessionIdRef.current,
+          location
+        )
 
         // Replace loading message with actual response
         setMessages((prev) => {
@@ -91,11 +139,20 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
           newMessages[newMessages.length - 1] = {
             id: generateMessageId(),
             role: 'assistant',
-            content: response.output,
+            content: response.answer,
+            statistics: response.statistics,
+            analysis: response.analysis,
+            spatial: response.spatial,
+            management: response.management,
             timestamp: new Date(),
           }
           return newMessages
         })
+
+        // "Use all data" removed the location filter; clear the map selection.
+        if (response.spatial?.cleared) {
+          setMapPoint(null)
+        }
 
         setConnectionError(false)
       } catch (err) {
@@ -122,11 +179,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         setIsLoading(false)
       }
     },
-    []
+    [mapPoint, radiusKm]
   )
 
   const handleClearHistory = () => {
     setMessages([])
+    sessionIdRef.current = generateMessageId()
     setAnchorEl(null)
   }
 
@@ -261,8 +319,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             Connection Error
           </Typography>
           <Typography variant="caption">
-            Unable to connect to the chatbot service. Please ensure the n8n service
-            is running on http://localhost:5678
+            Unable to connect to the DSSAT backend. Please ensure it is running on
+            http://localhost:8005.
           </Typography>
         </Alert>
       )}
@@ -385,6 +443,22 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
           <div ref={messagesEndRef} />
         </Container>
       </Box>
+
+      {/* Management fields and values the data contains */}
+      <ManagementVariablesPanel variables={managementVariables} error={managementError} />
+
+      {/* Location filter (map point + radius) */}
+      {radiusKm !== null && (
+        <LocationFilterPanel
+          point={mapPoint}
+          radiusKm={radiusKm}
+          maxRadiusKm={maxRadiusKm}
+          coverage={coverage}
+          coverageError={coverageError}
+          onPointChange={setMapPoint}
+          onRadiusChange={setRadiusKm}
+        />
+      )}
 
       {/* Input Container */}
       <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />

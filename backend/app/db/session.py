@@ -15,6 +15,8 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
+    # Fail fast with a clear error instead of hanging when PostgreSQL is down.
+    connect_args={"connect_timeout": 10},
 )
 
 # Create session factory

@@ -4,7 +4,8 @@ uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
 # Database
-sqlalchemy==2.0.25
+# 2.0.41+ is required for Python 3.14 (older 2.0.x fails on import)
+sqlalchemy==2.0.54
 psycopg[binary]==3.3.4
 alembic==1.13.1
 geoalchemy2==0.14.6
@@ -16,6 +17,10 @@ pydantic-settings==2.2.1
 # Utilities
 python-dotenv==1.0.1
 pandas==2.2.2
+
+# Controlled analysis layer (correlation / regression)
+numpy>=1.26
+scipy>=1.11
 pypdf==4.2.0
 
 # OpenAI

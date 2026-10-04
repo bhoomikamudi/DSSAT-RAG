@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     Index,
     ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
@@ -181,6 +182,15 @@ class Simulation(Base, TimestampMixin):
             "idx_simulation_location",
             "location",
             postgresql_using="gist",
+        ),
+        # Natural identity of a simulation; created by migration
+        # 002_unique_simulation_identity.
+        UniqueConstraint(
+            "run_name",
+            "latitude",
+            "longitude",
+            "simulation_year",
+            name="uq_simulations_run_location_year",
         ),
     )
 

@@ -109,6 +109,8 @@ class ContextBuilder:
         
         return {
             "total_count": result.total_count,
+            "returned_count": result.returned_count,
+            "sample_limit": result.sample_limit,
             "bounds": bounds,
             "sample_simulations": sample_sims
         }

@@ -57,14 +57,7 @@ async def ingest_file(
         result = await service.ingest_file(temp_path, file.filename)
 
         return {
-            "file_name": result.file_name,
-            "file_type": result.file_type,
-            "records_processed": result.records_processed,
-            "records_failed": result.records_failed,
-            "simulation_ids": result.simulation_ids,
-            "cde_entities": result.cde_entities,
-            "document_ids": result.document_ids,
-            "errors": result.errors,
+            **_result_payload(result),
             "execution_time_ms": round(result.execution_time_ms, 2),
         }
 
@@ -117,25 +110,14 @@ async def ingest_files_batch(
         # Create ingestion service and process
         service = IngestionService(db)
 
-        result = await service.ingest_files([p for p, _ in temp_paths])
+        # Pass the original names so provenance is not the temp file name.
+        result = await service.ingest_files(temp_paths)
 
         return {
             "total_files": len(files),
             "successful": result.get("successful", 0),
             "failed": result.get("failed", 0),
-            "results": [
-                {
-                    "file_name": r.file_name,
-                    "file_type": r.file_type,
-                    "records_processed": r.records_processed,
-                    "records_failed": r.records_failed,
-                    "simulation_ids": r.simulation_ids,
-                    "cde_entities": r.cde_entities,
-                    "document_ids": r.document_ids,
-                    "errors": r.errors,
-                }
-                for r in result.get("results", [])
-            ],
+            "results": [_result_payload(r) for r in result.get("results", [])],
         }
 
     except Exception as e:
@@ -149,3 +131,24 @@ async def ingest_files_batch(
         for temp_path, _ in temp_paths:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+
+
+def _result_payload(result) -> dict:
+    """Ingestion result, including provenance and idempotency outcome."""
+    return {
+        "file_name": result.file_name,
+        "file_type": result.file_type,
+        "status": result.status,
+        "source_sha256": result.source_sha256,
+        "rows_in_file": result.rows_in_file,
+        "records_processed": result.records_processed,
+        "records_inserted": result.records_inserted,
+        "records_already_present": result.records_already_present,
+        "records_invalid": result.records_invalid,
+        "records_failed": result.records_failed,
+        "simulation_ids": result.simulation_ids,
+        "cde_entities": result.cde_entities,
+        "document_ids": result.document_ids,
+        "warnings": result.warnings,
+        "errors": result.errors,
+    }

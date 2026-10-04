@@ -1,6 +1,10 @@
 """Pydantic schemas for query operations."""
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, model_validator
+
+from app.core.config import get_settings
 
 
 class QueryFilters(BaseModel):
@@ -68,3 +72,25 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., description="User query message")
     session_id: Optional[str] = Field(None, description="Session ID for context")
+    latitude: Optional[float] = Field(
+        None, ge=-90, le=90, description="Latitude of a point selected on the map"
+    )
+    longitude: Optional[float] = Field(
+        None, ge=-180, le=180, description="Longitude of a point selected on the map"
+    )
+    radius_km: Optional[float] = Field(
+        None, gt=0, description="Radius in km; the server default is used when omitted"
+    )
+
+    @model_validator(mode="after")
+    def _check_point(self) -> "ChatRequest":
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Provide both latitude and longitude for a map point, or neither.")
+        for name in ("latitude", "longitude", "radius_km"):
+            value = getattr(self, name)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number.")
+        max_radius = get_settings().SPATIAL_MAX_RADIUS_KM
+        if self.radius_km is not None and self.radius_km > max_radius:
+            raise ValueError(f"radius_km must be at most {max_radius:g}.")
+        return self

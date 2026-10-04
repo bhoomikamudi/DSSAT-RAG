@@ -1,8 +1,9 @@
 """CSV parser for DSSAT summary files."""
+import calendar
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from datetime import date
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import date, timedelta
 
 from app.models.canonical import CanonicalSimulation, SimulationModel, LocationModel
 
@@ -132,22 +133,72 @@ class DSSATParser:
 
         return value
 
+    @staticmethod
+    def valid_coordinates(latitude: Any, longitude: Any) -> bool:
+        """True for numeric WGS84 coordinates within valid ranges."""
+        try:
+            lat, lon = float(latitude), float(longitude)
+        except (TypeError, ValueError):
+            return False
+        if lat != lat or lon != lon:  # NaN
+            return False
+        if lat == -99 or lon == -99:  # DSSAT missing-value code
+            return False
+        return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
     @classmethod
-    def parse_csv(cls, file_path: str) -> List[CanonicalSimulation]:
+    def parse_dssat_date(cls, value: Any) -> Optional[date]:
+        """Parse a DSSAT YYYYDDD date (e.g. 1984062 -> 1984-03-02).
+
+        Uses the standard library rather than pd.to_datetime, which crashes
+        the interpreter with pandas 2.2.2 on Python 3.14.
+        """
+        cleaned = cls.clean_value(value)
+        if cleaned is None:
+            return None
+        try:
+            text = str(int(cleaned))
+        except (TypeError, ValueError):
+            return None
+        if len(text) != 7:
+            return None
+        year, day_of_year = int(text[:4]), int(text[4:])
+        days_in_year = 366 if calendar.isleap(year) else 365
+        if not 1 <= day_of_year <= days_in_year:
+            return None
+        return date(year, 1, 1) + timedelta(days=day_of_year - 1)
+
+    @classmethod
+    def parse_csv(
+        cls,
+        file_path: str,
+        source_name: Optional[str] = None,
+    ) -> List[CanonicalSimulation]:
         """
         Parse a DSSAT summary CSV file.
 
         Args:
             file_path: Path to the CSV file
+            source_name: Original file name (uploads are stored under temporary
+                names); used as the experiment name when given
 
         Returns:
             List of CanonicalSimulation instances
         """
-        # Read CSV with pandas
+        simulations, _ = cls.parse_csv_detailed(file_path, source_name)
+        return simulations
+
+    @classmethod
+    def parse_csv_detailed(
+        cls,
+        file_path: str,
+        source_name: Optional[str] = None,
+    ) -> Tuple[List[CanonicalSimulation], int]:
+        """Parse a summary CSV and also return the number of data rows read."""
         df = pd.read_csv(file_path, index_col=False)
 
-        # Derive a sensible default experiment name from the file name
-        default_experiment_name = Path(file_path).stem
+        # The experiment is named after the original file, not a temp path.
+        default_experiment_name = Path(source_name or file_path).stem
 
         results: List[CanonicalSimulation] = []
 
@@ -156,7 +207,7 @@ class DSSATParser:
             if model:
                 results.append(model)
 
-        return results
+        return results, len(df)
 
     @classmethod
     def _parse_row(cls, row: pd.Series, default_experiment_name: str) -> Optional[CanonicalSimulation]:
@@ -181,8 +232,10 @@ class DSSATParser:
         latitude = cls.clean_value(get_first(["LATITUDE", "LAT", "Latitude", "lat"]))
         longitude = cls.clean_value(get_first(["LONGITUDE", "LONG", "Longitude", "lon", "LON"]))
 
-        # Skip rows without valid coordinates
-        if latitude is None and longitude is None:
+        # Skip rows without a valid coordinate pair. A missing value used to be
+        # stored as 0.0, which silently placed the row on the equator or the
+        # prime meridian and would distort spatial filtering.
+        if not cls.valid_coordinates(latitude, longitude):
             return None
 
         # Parse RUN_NAME
@@ -197,24 +250,9 @@ class DSSATParser:
         harvest_area = cls.clean_value(get_first(["HARVEST_AREA", "HAREA", "HARVESTAREA"]))
         year = cls.clean_value(get_first(["WYEAR", "YEAR"]))
 
-        # Parse DSSAT day-of-year date fields (PDAT, MDAT, HDAT) in format YYYYDDD -> date
-        def parse_yyyydoy(val: Any) -> Optional[date]:
-            v = cls.clean_value(val)
-            if v is None:
-                return None
-            try:
-                s = str(int(v))
-                if len(s) == 7:
-                    y = int(s[:4])
-                    doy = int(s[4:])
-                    return pd.to_datetime(f"{y}-{doy}", format="%Y-%j").date()
-            except Exception:
-                return None
-            return None
-
-        pdat = parse_yyyydoy(get_first(["PDAT"]))
-        mdat = parse_yyyydoy(get_first(["MDAT"]))
-        hdat = parse_yyyydoy(get_first(["HDAT"]))
+        pdat = cls.parse_dssat_date(get_first(["PDAT"]))
+        mdat = cls.parse_dssat_date(get_first(["MDAT"]))
+        hdat = cls.parse_dssat_date(get_first(["HDAT"]))
 
         try:
             year = int(year) if year is not None else 2024

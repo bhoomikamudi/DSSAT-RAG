@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Optional, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.analysis_vocabulary import (
+    ANALYSIS_OPERATIONS,
+    ANALYSIS_VARIABLES,
+    GROUP_BY_FIELDS,
+)
 from app.services.statistics_service import StatisticsService
 
 
@@ -54,8 +59,16 @@ class ToolRegistry:
             "params": {"query": "string", "top_k": "int"},
         }
 
+        analysis_tool = {
+            "name": "analyze_simulation_data",
+            "description": "Controlled Python analysis (correlation, linear/quadratic regression, descriptive statistics) on filtered simulation records. Use operation=\"analysis\".",
+            "supported_operations": list(ANALYSIS_OPERATIONS),
+            "supported_variables": list(ANALYSIS_VARIABLES),
+            "supported_group_by": list(GROUP_BY_FIELDS),
+        }
+
         self._capabilities = {
-            "tools": [simulation_tool, cde_tool, semantic_tool]
+            "tools": [simulation_tool, cde_tool, semantic_tool, analysis_tool]
         }
         return self._capabilities
 
@@ -72,6 +85,11 @@ class ToolRegistry:
                     lines.append(f"  Supported Crops: {', '.join(t['supported_crops'])}")
                 lines.append(f"  Supported Aggregations: {', '.join(t['supported_aggregations'])}")
                 lines.append(f"  Supported Spatial: {', '.join(t['supported_spatial'])}")
+            elif t["name"] == "analyze_simulation_data":
+                lines.append(f"- {t['name']}: {t['description']}")
+                lines.append(f"  Operations: {', '.join(t['supported_operations'])}")
+                lines.append(f"  Variables: {', '.join(t['supported_variables'])}")
+                lines.append(f"  Group by: {', '.join(t['supported_group_by'])}")
             elif t["name"] == "query_cde":
                 lines.append(f"- {t['name']}: {t['description']}")
                 lines.append(f"  Entities: {', '.join(t['supported_entities'])}")
