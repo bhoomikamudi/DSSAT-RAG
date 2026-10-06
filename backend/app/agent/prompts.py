@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Dict
 
+from app.agent.grouped_counts import grouped_counts
+from app.agent.series_pattern import describe_pattern
+from app.services.analysis_vocabulary import variable_unit
 from app.agent.models import LLMContext
 
 
@@ -290,9 +293,26 @@ Dataset limitations:
     the values listed there. When no management filter was requested, make clear the
     result combines all those conditions; never describe it as the result for one
     specific cultivar, planting date or condition. When a filter was requested, state it.
+    If the Management Conditions give actual planting dates (PDAT), include that date range
+    and say the exact date varies across the matching records. Do not mention a "normal
+    planting date" without these actual dates, and never present the range as one date.
+    If they also give the normal planting date (pfrst0) for the same scope, state it in its
+    own clause, separate from the full range (or say it cannot be shown, if they say so).
     If the Management Conditions contain "Not applied", say plainly that this condition
     could not be applied, give the reason, and say the result covers all records for it.
     Never present such a result as if it were for that condition.
+35. If Grouped Counts are given, lead with the total number of output records across all
+    groups and give the per-group count in brackets, copying the per-group phrase from
+    Grouped Counts word for word, for example: "Across 900 output records, BASE had the
+    highest average yield at 4,665 kg/ha (180 records per cultivar)." Always keep the words
+    "per cultivar" (or per planting date, per year, ...); a bare "(180 records)" is wrong.
+    Never present one group's record count as the total.
+36. Make trend claims only as stated in Ordered Pattern. Grouped values in Statistics are
+    sorted by value, not by planting date or year, so do not infer a trend from their order.
+    If Ordered Pattern says the values are not monotonic, describe the highest and lowest
+    groups (and any clear peak or dip) without words such as "progressively", "steadily",
+    "consistently" or "declined with later planting". If Ordered Pattern is "None", do not
+    describe any trend across groups.
 Output format:
 - Direct answer
 - One short supporting sentence when appropriate
@@ -446,13 +466,29 @@ def get_response_prompt(
             spatial_filter += f" {scope['note']}"
 
     management = (context.management_scope or {}).get("sentence") or "None"
+    counts = grouped_counts(context.statistics.breakdown) if context.statistics else None
+    grouped = (
+        f"{counts['sentence']}\nPer-group phrase to use: ({counts['per_group_text']})" if counts else "None"
+    )
+
+    pattern = (
+        describe_pattern(context.statistics.breakdown, variable_unit(context.statistics.metric) or "")
+        if context.statistics else None
+    )
+    ordered_pattern = pattern["sentence"] if pattern else "None"
 
     context_str = f"""
 Spatial Filter:
 {spatial_filter}
 
+Ordered Pattern:
+{ordered_pattern}
+
 Management Conditions:
 {management}
+
+Grouped Counts:
+{grouped}
 
 Analysis:
 {analysis}

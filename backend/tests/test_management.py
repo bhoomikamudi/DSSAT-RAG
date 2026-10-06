@@ -7,6 +7,7 @@ LLM-path test uses a mocked LLM (no real model is called).
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -87,6 +88,7 @@ async def test_available_lists_only_values_present():
     session = RowsSession([
         [("SHT", 2), ("BASE", 3), ("", 9), (None, 1)],          # cultivar (blank/NULL dropped)
         [("pfrst15", 1), ("pfrst-30", 1), ("pfrst0", 1)],       # planting_stage
+        [("pfrst15", "03-30", "04-14"), ("pfrst-30", "02-13", "02-28"), ("pfrst0", "03-15", "03-30")],  # MM-DD spans
         [("RF", 5)],                                            # irrigation
         [],                                                     # nitrogen_level: none stored
         (5, 1990, 1995, ["MZ"]),                                # scope
@@ -96,6 +98,10 @@ async def test_available_lists_only_values_present():
     assert list(fields) == ["cultivar", "planting_stage", "irrigation"]  # empty field omitted
     assert [v["value"] for v in fields["cultivar"]["values"]] == ["BASE", "SHT"]
     assert [v["value"] for v in fields["planting_stage"]["values"]] == ["pfrst-30", "pfrst0", "pfrst15"]
+    assert [v["label"] for v in fields["planting_stage"]["values"]] == [
+        "30 days before the normal planting date (planted 13–28 Feb)",
+        "normal planting date (planted 15–30 Mar)",
+        "15 days after the normal planting date (planted 30 Mar–14 Apr)"]
     assert fields["irrigation"]["values"] == [{"value": "RF", "label": "rainfed", "simulations": 5}]
     assert result["years"] == {"min": 1990, "max": 1995} and result["crops"] == ["MZ"]
 
@@ -230,6 +236,8 @@ from app.agent.unsupported_conditions import find_unsupported_conditions  # noqa
     ("yield with no-till", "tillage"),
     ("average yield at a planting density of 5 plants per m2", "plant_density"),
     ("average yield in the highland agro-ecological zone", "ecological_zone"),
+    ("What is the average yield with pesticide use?", "pesticide"),
+    ("average yield where fungicides were sprayed", "pesticide"),
 ])
 def test_unsupported_conditions_detected(question, key):
     assert [item["key"] for item in find_unsupported_conditions(question)] == [key]
@@ -298,3 +306,189 @@ def test_supported_question_has_nothing_unapplied(client):
     body = ask(client, "What is the average yield for BASE?")
     assert "unapplied" not in body["management"]
     assert "Not applied" not in body["answer"]
+
+
+@pytest.mark.fallback
+def test_fallback_pesticide_question_states_data_unavailable(client, sample_frame):
+    """Regression: the no-LLM path silently averaged all records for a pesticide question."""
+    body = ask(client, "What is the average yield with pesticide use?")
+    scope = body["management"]
+    assert [u["key"] for u in scope["unapplied"]] == ["pesticide"]
+    assert "the dataset has no pesticide information" in body["answer"]
+    assert "covers all matching records regardless of this condition" in body["answer"]
+
+
+# -----------------------------------------------------------------------------
+# 5. Planting dates: the actual PDAT range of the records behind each answer
+# -----------------------------------------------------------------------------
+
+from datetime import date  # noqa: E402
+
+from app.parsers.csv_parser import DSSATParser  # noqa: E402
+from app.services.management_service import date_text, day_text, planting_date_note  # noqa: E402
+from conftest import pdat_to_date  # noqa: E402
+
+
+def pdat_range(frame):
+    dates = [pdat_to_date(v) for v in frame["PDAT"]]
+    days = [f"{d:%m-%d}" for d in dates]
+    return min(dates), max(dates), min(days), max(days)
+
+
+@pytest.mark.parametrize("pdat,expected", [
+    (2020060, date(2020, 2, 29)),   # leap year: day 60 is 29 Feb
+    (2019060, date(2019, 3, 1)),    # non-leap year: day 60 is 1 Mar
+    (2020366, date(2020, 12, 31)),
+    (2019365, date(2019, 12, 31)),
+])
+def test_pdat_conversion_handles_leap_years(pdat, expected):
+    assert DSSATParser.parse_dssat_date(pdat) == expected  # what ingestion stores
+    assert pdat_to_date(pdat) == expected                  # what the test fake uses
+    assert DSSATParser.parse_dssat_date(2019366) is None    # no day 366 outside leap years
+
+
+def test_date_formatting_keeps_leap_days():
+    assert day_text("02-29") == "29 Feb" and date_text(date(2020, 2, 29)) == "29 Feb 2020"
+
+
+def test_planting_date_note_wording():
+    one_year = {"first": date(2020, 2, 29), "last": date(2020, 3, 14), "first_day": "02-29", "last_day": "03-14",
+                "dates": 9, "locations": 92, "years": 1, "stages": 1}
+    assert planting_date_note(one_year) == (
+        "Actual planting dates (PDAT) in the matching records range from 29 Feb to 14 Mar 2020; "
+        "the exact date varies across the matching records (by location).")
+    many_years = {**one_year, "first": date(1984, 3, 30), "last": date(2020, 4, 4), "first_day": "03-30",
+                  "last_day": "04-14", "years": 37}
+    assert planting_date_note(many_years) == (
+        "Actual planting dates (PDAT) in the matching records range from 30 Mar to 14 Apr each year "
+        "(1984–2020); the exact date varies across the matching records (by location and year).")
+    single = {**one_year, "last": date(2020, 2, 29), "dates": 1}
+    assert planting_date_note(single) == "Actual planting date (PDAT) in the matching records: 29 Feb 2020."
+    assert planting_date_note(None) == ""
+
+
+def planting_part(sentence):
+    return sentence[sentence.index("Actual planting"):]
+
+
+@pytest.mark.fallback
+def test_broad_year_answer_uses_that_years_pdat_range(client, sample_frame):
+    body = ask(client, "What is the average yield in 2020?")
+    subset = sample_frame[sample_frame["year"] == 2020]
+    first, last, _, _ = pdat_range(subset)
+    note = planting_part(body["management"]["sentence"])
+    assert note.startswith(f"Actual planting dates (PDAT) in the matching records range from "
+                           f"{first.day} {first:%b} to {date_text(last)};")
+    assert "the exact date varies across the matching records" in note
+    # "Normal planting date" appears only together with its actual pfrst0 dates.
+    mentions = re.findall(r"normal planting date[^.;]*", note)
+    assert mentions and all(re.search(r"\(pfrst0\) for .* (?:ranges from|was) \d", m) for m in mentions)
+    assert body["management"]["planting_dates"]["first"] == first.isoformat()
+    # Not the whole-dataset range: the answer used only 2020 records.
+    assert pdat_range(sample_frame)[0] != first
+    assert body["management"]["sentence"] in body["answer"]
+
+
+@pytest.mark.fallback
+def test_stage_filtered_answer_uses_that_stages_pdat_range(client, sample_frame):
+    body = ask(client, "What is the average yield for LNG planted 15 days late?")
+    subset = sample_frame[(sample_frame["cultivar"] == "LNG") & (sample_frame["planting_stage"] == "pfrst15")]
+    first, last, first_day, last_day = pdat_range(subset)
+    note = planting_part(body["management"]["sentence"])
+    assert note.startswith(f"Actual planting dates (PDAT) in the matching records range from "
+                           f"{day_text(first_day)} to {day_text(last_day)} each year ({first.year}–{last.year});")
+    info = body["management"]["planting_dates"]
+    assert (info["first"], info["last"], info["stages"]) == (first.isoformat(), last.isoformat(), 1)
+
+
+@pytest.mark.fallback
+def test_leap_year_stage_range_starts_on_29_february(client, sample_frame):
+    body = ask(client, "What is the average yield in 2020 for planting 15 days early?")
+    subset = sample_frame[(sample_frame["year"] == 2020) & (sample_frame["planting_stage"] == "pfrst-15")]
+    first, last, _, _ = pdat_range(subset)
+    assert body["statistics"]["count"] == len(subset)
+    assert first == date(2020, 2, 29)  # the data really contains a leap-day planting
+    assert planting_part(body["management"]["sentence"]).startswith(
+        f"Actual planting dates (PDAT) in the matching records range from 29 Feb to {date_text(last)};")
+
+
+# -----------------------------------------------------------------------------
+# 6. The normal planting (pfrst0) baseline for the answer's own scope
+# -----------------------------------------------------------------------------
+
+def baseline_part(sentence):
+    return sentence[sentence.index("Actual planting"):]
+
+
+def expected_baseline(frame, scope):
+    """The pfrst0 sentence the answer should contain, from the sample rows."""
+    first, last, first_day, last_day = pdat_range(frame)
+    if first == last:
+        return f"The normal planting date (pfrst0) for {scope} was {date_text(first)}."
+    if first.year == last.year:
+        return f"The normal planting date (pfrst0) for {scope} ranges from {first.day} {first:%b} to {date_text(last)};"
+    return (f"The normal planting date (pfrst0) for {scope} ranges from {day_text(first_day)} to "
+            f"{day_text(last_day)} each year ({first.year}–{last.year});")
+
+
+@pytest.mark.fallback
+def test_year_query_shows_all_stage_range_and_pfrst0_baseline(client, sample_frame):
+    body = ask(client, "What is the average yield in 2020?")
+    year = sample_frame[sample_frame["year"] == 2020]
+    note = baseline_part(body["management"]["sentence"])
+    first, last, _, _ = pdat_range(year)
+    assert note.startswith(f"Actual planting dates (PDAT) in the matching records range from {first.day} {first:%b} "
+                           f"to {date_text(last)};")
+    assert expected_baseline(year[year["planting_stage"] == "pfrst0"], "the same year") in note
+    assert body["management"]["normal_planting_status"] == "ok"
+    # The yield still uses every planting stage of 2020.
+    assert body["statistics"]["count"] == len(year)
+
+
+@pytest.mark.fallback
+def test_year_and_area_query_scopes_the_baseline_to_that_area(client, sample_frame):
+    lat, lon = map(float, sample_frame[["LATITUDE", "LONGITUDE"]].iloc[0])
+    body = ask(client, "What is the average yield in 2020 here?", latitude=lat, longitude=lon, radius_km=25)
+    area = sample_frame[(distances_km(sample_frame, lat, lon) <= 25) & (sample_frame["year"] == 2020)]
+    assert body["statistics"]["count"] == len(area)
+    pfrst0 = area[area["planting_stage"] == "pfrst0"]
+    note = baseline_part(body["management"]["sentence"])
+    assert expected_baseline(pfrst0, "the same year and area") in note
+    assert body["management"]["normal_planting_dates"]["first"] == pdat_range(pfrst0)[0].isoformat()
+    # Scoped, not dataset-wide: the area's baseline is not the whole 2020 baseline.
+    year0 = sample_frame[(sample_frame["year"] == 2020) & (sample_frame["planting_stage"] == "pfrst0")]
+    assert pdat_range(pfrst0)[:2] != pdat_range(year0)[:2] or len(pfrst0) == len(year0)
+
+
+@pytest.mark.fallback
+def test_stage_filtered_query_shows_stage_range_and_baseline(client, sample_frame):
+    body = ask(client, "What is the average yield for LNG planted 15 days late?")
+    lng = sample_frame[sample_frame["cultivar"] == "LNG"]
+    stage = lng[lng["planting_stage"] == "pfrst15"]
+    note = baseline_part(body["management"]["sentence"])
+    _, _, first_day, last_day = pdat_range(stage)
+    assert f"range from {day_text(first_day)} to {day_text(last_day)} each year" in note
+    assert expected_baseline(lng[lng["planting_stage"] == "pfrst0"], "the same cultivar") in note
+    assert body["statistics"]["count"] == len(stage)
+
+
+@pytest.mark.fallback
+def test_missing_pfrst0_baseline_is_reported_not_guessed(client, fake_db, sample_frame):
+    """No pfrst0 records in the answer's scope: say so instead of guessing."""
+    frame = fake_db.frame
+    fake_db.frame = frame[~((frame["year"] == 2020) & (frame["planting_stage"] == "pfrst0"))]
+    body = ask(client, "What is the average yield in 2020?")
+    note = baseline_part(body["management"]["sentence"])
+    assert body["management"]["normal_planting_status"] == "unavailable"
+    assert body["management"]["normal_planting_dates"] is None
+    assert ("No normal planting (pfrst0) records exist for the same year, so the normal planting date "
+            "cannot be shown for this answer.") in note
+    assert "The normal planting date (pfrst0) for" not in note
+
+
+def test_pfrst0_only_answer_is_not_compared_with_itself():
+    info = {"first": date(2020, 3, 15), "last": date(2020, 3, 29), "first_day": "03-15", "last_day": "03-29",
+            "dates": 15, "locations": 92, "years": 1, "stages": 1}
+    note = planting_date_note(info, None, "same", "the same year")
+    assert note.endswith("These are the normal planting (pfrst0) records.")
+    assert note.count("15 Mar") == 1

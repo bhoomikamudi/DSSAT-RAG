@@ -88,6 +88,13 @@ def distances_km(frame: pd.DataFrame, latitude: float, longitude: float) -> pd.S
     )
 
 
+def pdat_to_date(value):
+    """DSSAT YYYYDDD -> date (day 60 is 29 Feb in leap years, 1 Mar otherwise)."""
+    from datetime import date, timedelta
+    text = str(int(value))
+    return date(int(text[:4]), 1, 1) + timedelta(days=int(text[4:]) - 1)
+
+
 def apply_filters(frame: pd.DataFrame, **filters: Any) -> pd.DataFrame:
     """pandas equivalent of StatisticsService._build_simulation_filters."""
     mask = pd.Series(True, index=frame.index)
@@ -299,12 +306,25 @@ def fake_db(monkeypatch, sample_frame) -> FakeDataLayer:
     from app.services.management_service import MANAGEMENT_FIELDS, ManagementService, sort_values
 
     def management_values(frame):
+        # PDAT is DSSAT YYYYDDD; convert with the calendar so leap years are right.
+        dates = [pdat_to_date(v) for v in frame["PDAT"]]
+        planting = None
+        if dates:
+            month_days = [f"{d:%m-%d}" for d in dates]
+            planting = {
+                "first": min(dates), "last": max(dates),
+                "first_day": min(month_days), "last_day": max(month_days),
+                "dates": len(set(dates)),
+                "locations": len(set(zip(frame["LATITUDE"], frame["LONGITUDE"]))),
+                "years": int(frame["year"].nunique()), "stages": int(frame["planting_stage"].nunique()),
+            }
         return {
             "simulations": int(len(frame)),
             "values": {
                 field: sort_values(field, frame[FIELD_COLUMNS[field]].dropna().unique().tolist())
                 for field, _, _ in MANAGEMENT_FIELDS
             },
+            "planting_dates": planting,
         }
 
     async def matched_values(self, filters, spatial=None):
